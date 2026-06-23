@@ -1,0 +1,16 @@
+Tôi có ý tưởng như thế này, tôi muốn thiết kế lại luồng xử lý và công cụ sử dụng như sau:
+- Vẫn giữ logic và cách xử lý dữ liệu cũng như output hiện tại, cách lấy dữ liệu output cũng giống hiện tại
+- Tôi muốn luồng của tôi sẽ là chuyển qua đóng gói thành image chạy bằng docker và tôi sẽ cần 3 image ứng với 3 công việc như sau: 
+Kiến trúc: code python -> đẩy dữ liệu vào MQTT -> 1 code python lắng nghe MQTT và đẩy dữ liệu vào thinkspeak
+- image đầu tiền giả lập là 1 thiết bị camera, trong image này sẽ có dữ liệu raw, mình cần đẩy vào khi build. Và chạy code để đẩy vào MQTT
+- image 2 sẽ deploy MQTT
+- image 3 là code python lắng nghe topic MQTT từ image 1 và đẩy dữ liệu lên thinkspeak
+- Hãy tạo mới 3 folder, để thực hiện những điều này, mỗi folder chưa code và file dockerfile, file docker compose để sử dụng docker file, tôi mỗi bạn build docker file làm sao, tôi chỉ cần chạy docker compose lần lượt là luồng sẽ thực hiện luôn
+
+
+Tôi vẫn muốn run cả kiến trúc này với docker compose như hiện tại nhưng tôi, không muốn sử dụng thinkspeak để lưu trữ dữ liệu nữa mà tôi sẽ dùng database postgresql.
+Kiến trúc: code python -> đẩy dữ liệu vào MQTT -> 1 code python lắng nghe MQTT và đẩy dữ liệu vào postgresql, vì đây là dữ liệu tôi giả lập theo chuỗi thời gian và có trường timestamp, tôi tôi muốn đoạn logic ở đoạn code "1 code python lắng nghe MQTT" sẽ xử lý logic SCD type để lưu vào postgresql có các trường như sau: unique_id, frame_id, id, occupied, timestamp, startdate, enddate, status.
+    + với unique_id được tạo từ hash của frame_id, id để có tính duy nhất
+    + frame_id, id, occupied, timestamp là trường dữ liệu của được tách từ ảnh
+    + startdate, enddate, status lầ lượt là thời điểm bắt đầu, kết thúc của ảnh và trạng thái vì cái này là lưu scd type 2, nhớ lưu dưới dạng timestamp
+    + Cách đánh nhãn ID ở code code python trước khi đưa vào MQTT đổi thành kiểu đánh giống file D:\Master\20252B-digital-twin parking.ipynb VD: dạng A01, B02

@@ -1,0 +1,1 @@
+python .\stream_clean_to_json.py --input data/content/dataset --storage thingspeak --thingspeak-upload-mode slot --thingspeak-delay 16 --clear-thingspeak-before-upload

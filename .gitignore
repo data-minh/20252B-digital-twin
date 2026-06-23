@@ -1,0 +1,48 @@
+# Secrets and local environment
+# .env
+.env.*
+!.env.example
+
+# Python cache and test artifacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Large/generated datasets and outputs
+data/
+# data_clean/
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Generated JSON outputs
+stream_json_outputs/
+data/stream_json_outputs/
+
+# Local notebooks/outputs
+.ipynb_checkpoints/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Docker local overrides
+docker-compose.override.yml

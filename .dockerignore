@@ -1,0 +1,11 @@
+.env
+.pytest_cache
+__pycache__
+**/__pycache__
+*.pyc
+data/**
+!data/
+!data/content/
+!data/content/dataset/
+!data/content/dataset/**
+docs/superpowers

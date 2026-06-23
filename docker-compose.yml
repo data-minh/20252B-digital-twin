@@ -1,0 +1,45 @@
+services:
+  mqtt-broker:
+    image: minh333/parking-mqtt-broker:latest
+    # build:
+    #   context: .
+    #   dockerfile: mqtt_broker/Dockerfile
+    container_name: parking-mqtt-broker
+    ports:
+      - "1883:1883"
+
+  postgres-sink:
+    image: minh333/parking-postgres-sink:latest
+    # build:
+    #   context: .
+    #   dockerfile: postgres_sink/Dockerfile
+    container_name: parking-postgres-sink
+    depends_on:
+      mqtt-broker:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      MQTT_HOST: mqtt-broker
+      MQTT_PORT: "1883"
+      MQTT_TOPIC: parking/frames
+
+  camera-device:
+    image: minh333/parking-camera-device:latest
+    # build:
+    #   context: .
+    #   dockerfile: camera_device/Dockerfile
+    container_name: parking-camera-device
+    depends_on:
+      mqtt-broker:
+        condition: service_started
+      postgres-sink:
+        condition: service_started
+    environment:
+      MQTT_HOST: mqtt-broker
+      MQTT_PORT: "1883"
+      MQTT_TOPIC: parking/frames
+      CAMERA_INPUT: data/content/dataset
+      CAMERA_PUBLISH_INTERVAL: "1"
+      CAMERA_FRAME_INTERVAL_SECONDS: "1"
+      CAMERA_START_DELAY: "5"

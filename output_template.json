@@ -1,0 +1,10 @@
+{
+"unique_id": "sha256(frame_id:id)",
+"frame_id": 2,
+"id": "A01",
+"occupied": 1,
+"timestamp": "2021-10-18 21:38:10.000000",
+"startdate": "2021-10-18 21:38:10.000000",
+"enddate": null,
+"status": "active"
+}
