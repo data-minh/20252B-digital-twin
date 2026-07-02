@@ -1,34 +1,41 @@
 services:
   mqtt-broker:
     image: minh333/parking-mqtt-broker:latest
-    # build:
-    #   context: .
-    #   dockerfile: mqtt_broker/Dockerfile
+    build:
+      context: .
+      dockerfile: mqtt_broker/Dockerfile
     container_name: parking-mqtt-broker
+    environment:
+      MQTT_TOPIC: ${MQTT_TOPIC:-parking/frames}
+      MQTT_PUB_USERNAME: ${MQTT_PUB_USERNAME}
+      MQTT_PUB_PASSWORD: ${MQTT_PUB_PASSWORD}
+      MQTT_SUB_USERNAME: ${MQTT_SUB_USERNAME}
+      MQTT_SUB_PASSWORD: ${MQTT_SUB_PASSWORD}
     ports:
       - "1883:1883"
 
   postgres-sink:
     image: minh333/parking-postgres-sink:latest
-    # build:
-    #   context: .
-    #   dockerfile: postgres_sink/Dockerfile
+    build:
+      context: .
+      dockerfile: postgres_sink/Dockerfile
     container_name: parking-postgres-sink
     depends_on:
       mqtt-broker:
         condition: service_started
-    env_file:
-      - .env
     environment:
+      DATABASE_URL: ${DATABASE_URL}
       MQTT_HOST: mqtt-broker
       MQTT_PORT: "1883"
-      MQTT_TOPIC: parking/frames
+      MQTT_TOPIC: ${MQTT_TOPIC:-parking/frames}
+      MQTT_USERNAME: ${MQTT_SUB_USERNAME}
+      MQTT_PASSWORD: ${MQTT_SUB_PASSWORD}
 
   camera-device:
     image: minh333/parking-camera-device:latest
-    # build:
-    #   context: .
-    #   dockerfile: camera_device/Dockerfile
+    build:
+      context: .
+      dockerfile: camera_device/Dockerfile
     container_name: parking-camera-device
     depends_on:
       mqtt-broker:
@@ -38,8 +45,11 @@ services:
     environment:
       MQTT_HOST: mqtt-broker
       MQTT_PORT: "1883"
-      MQTT_TOPIC: parking/frames
+      MQTT_TOPIC: ${MQTT_TOPIC:-parking/frames}
+      MQTT_USERNAME: ${MQTT_PUB_USERNAME}
+      MQTT_PASSWORD: ${MQTT_PUB_PASSWORD}
       CAMERA_INPUT: data/content/dataset
       CAMERA_PUBLISH_INTERVAL: "1"
       CAMERA_FRAME_INTERVAL_SECONDS: "1"
+      CAMERA_LOOP_DATASET: "true"
       CAMERA_START_DELAY: "5"

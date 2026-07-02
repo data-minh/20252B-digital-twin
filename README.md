@@ -89,9 +89,11 @@ Trong Docker Compose:
 ```text
 CAMERA_FRAME_INTERVAL_SECONDS=1
 CAMERA_PUBLISH_INTERVAL=1
+CAMERA_LOOP_DATASET=true
 ```
 
 `CAMERA_FRAME_INTERVAL_SECONDS` la khoang cach thoi gian gia lap trong payload. `CAMERA_PUBLISH_INTERVAL` la toc do publish MQTT.
+`CAMERA_LOOP_DATASET=true` lam camera doc het dataset roi quay lai frame dau tien. Moi vong lap van giu `frame_id` theo anh goc, vi du dataset 766 anh thi vong 1 la `1..766`, vong 2 tiep tuc la `1..766`.
 
 ## PostgreSQL schema
 

@@ -244,9 +244,15 @@ def wait_for_postgres():
             time.sleep(2)
 
 
-def run_sink(mqtt_host: str, mqtt_port: int, topic: str):
+def configure_mqtt_auth(client, username: str | None = None, password: str | None = None):
+    if username:
+        client.username_pw_set(username, password or None)
+
+
+def run_sink(mqtt_host: str, mqtt_port: int, topic: str, mqtt_username: str | None = None, mqtt_password: str | None = None):
     conn = wait_for_postgres()
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    configure_mqtt_auth(client, mqtt_username, mqtt_password)
 
     def on_connect(client, userdata, flags, reason_code, properties):
         print(f"Postgres sink connected to MQTT reason_code={reason_code}; subscribing topic={topic}", flush=True)
@@ -282,9 +288,11 @@ def main():
     parser.add_argument("--mqtt-host", default=os.environ.get("MQTT_HOST", "mqtt-broker"))
     parser.add_argument("--mqtt-port", type=int, default=int(os.environ.get("MQTT_PORT", "1883")))
     parser.add_argument("--topic", default=os.environ.get("MQTT_TOPIC", "parking/frames"))
+    parser.add_argument("--mqtt-username", default=os.environ.get("MQTT_USERNAME"))
+    parser.add_argument("--mqtt-password", default=os.environ.get("MQTT_PASSWORD"))
     args = parser.parse_args()
 
-    run_sink(args.mqtt_host, args.mqtt_port, args.topic)
+    run_sink(args.mqtt_host, args.mqtt_port, args.topic, args.mqtt_username, args.mqtt_password)
 
 
 if __name__ == "__main__":

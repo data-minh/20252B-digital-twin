@@ -221,6 +221,88 @@ def test_camera_mqtt_message_wraps_frame_payload():
     }
 
 
+def test_camera_restarts_dataset_from_first_frame_when_looping(tmp_path, monkeypatch):
+    camera = load_module_from_path("camera_to_mqtt", Path("camera_device/camera_to_mqtt.py"))
+    image_1, labels = write_frame(tmp_path, split="train", frame_id="0001", label_text="1 0.10 0.10 0.05 0.05\n")
+    image_2, _ = write_frame(tmp_path, split="train", frame_id="0002", label_text="0 0.10 0.10 0.05 0.05\n")
+    published = []
+
+    class FakePublishResult:
+        def wait_for_publish(self):
+            return None
+
+    class FakeClient:
+        def connect(self, mqtt_host, mqtt_port, keepalive):
+            return None
+
+        def loop_start(self):
+            return None
+
+        def publish(self, topic, payload, qos):
+            published.append(json.loads(payload))
+            return FakePublishResult()
+
+        def loop_stop(self):
+            return None
+
+        def disconnect(self):
+            return None
+
+    monkeypatch.setattr(camera.mqtt, "Client", lambda *args, **kwargs: FakeClient())
+    monkeypatch.setattr(camera.time, "sleep", lambda seconds: None)
+
+    count = camera.publish_dataset(
+        input_dir=tmp_path,
+        mqtt_host="mqtt-broker",
+        mqtt_port=1883,
+        topic="parking/frames",
+        start_timestamp=1634567890,
+        frame_interval_seconds=1,
+        publish_interval_seconds=0,
+        max_frames=3,
+        loop_dataset=True,
+    )
+
+    assert count == 3
+    assert [message["frame_id"] for message in published] == [1, 2, 1]
+    assert [message["source_frame_id"] for message in published] == ["0001", "0002", "0001"]
+    assert [message["image"] for message in published] == [str(image_1), str(image_2), str(image_1)]
+    assert [message["payload"][0]["timestamp"] for message in published] == [1634567890, 1634567891, 1634567890]
+
+
+def test_camera_configures_mqtt_username_and_password():
+    camera = load_module_from_path("camera_to_mqtt", Path("camera_device/camera_to_mqtt.py"))
+    calls = []
+
+    class FakeClient:
+        def username_pw_set(self, username, password):
+            calls.append((username, password))
+
+    client = FakeClient()
+
+    camera.configure_mqtt_auth(client, "camera_pub", "pub-secret")
+
+    assert calls == [("camera_pub", "pub-secret")]
+
+
+def test_camera_retries_mqtt_connect_until_broker_is_available(monkeypatch):
+    camera = load_module_from_path("camera_to_mqtt", Path("camera_device/camera_to_mqtt.py"))
+    calls = []
+
+    class FakeClient:
+        def connect(self, mqtt_host, mqtt_port, keepalive):
+            calls.append((mqtt_host, mqtt_port, keepalive))
+            if len(calls) == 1:
+                raise OSError("broker not ready")
+            return None
+
+    monkeypatch.setattr(camera.time, "sleep", lambda seconds: None)
+
+    camera.connect_mqtt_with_retry(FakeClient(), "mqtt-broker", 1883)
+
+    assert calls == [("mqtt-broker", 1883, 60), ("mqtt-broker", 1883, 60)]
+
+
 def test_thingspeak_sink_uploads_received_frame_payload(monkeypatch):
     sink = load_module_from_path("mqtt_to_thingspeak", Path("thingspeak_sink/mqtt_to_thingspeak.py"))
     calls = []
@@ -487,6 +569,21 @@ def test_postgres_connect_prefers_database_url(monkeypatch):
     ]
 
 
+def test_postgres_sink_configures_mqtt_username_and_password():
+    sink = load_module_from_path("postgres_sink", Path("postgres_sink/postgres_sink.py"))
+    calls = []
+
+    class FakeClient:
+        def username_pw_set(self, username, password):
+            calls.append((username, password))
+
+    client = FakeClient()
+
+    sink.configure_mqtt_auth(client, "postgres_sub", "sub-secret")
+
+    assert calls == [("postgres_sub", "sub-secret")]
+
+
 def test_postgres_applies_frame_payload_in_one_transaction(monkeypatch):
     sink = load_module_from_path("postgres_sink", Path("postgres_sink/postgres_sink.py"))
     events = []
@@ -573,3 +670,9 @@ def test_postgres_schema_uses_timestamp_without_time_zone():
     assert 'startdate TIMESTAMP(6) NOT NULL' in schema_sql
     assert 'enddate TIMESTAMP(6) NULL' in schema_sql
     assert 'TIMESTAMPTZ' not in schema_sql
+
+
+def test_mqtt_entrypoint_makes_generated_auth_files_readable_by_mosquitto():
+    entrypoint = Path("mqtt_broker/entrypoint.sh").read_text(encoding="utf-8")
+
+    assert 'chown mosquitto:mosquitto "$PASSWORD_FILE" "$ACL_FILE"' in entrypoint
