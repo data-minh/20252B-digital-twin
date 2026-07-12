@@ -50,6 +50,11 @@ services:
       MQTT_PASSWORD: ${MQTT_PUB_PASSWORD}
       CAMERA_INPUT: data/content/dataset
       CAMERA_PUBLISH_INTERVAL: "1"
+      CAMERA_STREAM_INTERVAL: "0.4"
       CAMERA_FRAME_INTERVAL_SECONDS: "1"
       CAMERA_LOOP_DATASET: "true"
       CAMERA_START_DELAY: "5"
+      CAMERA_MJPEG_PORT: "8081"
+      CAMERA_STREAM_SECRET: ${CAMERA_STREAM_SECRET:-change-me-camera-stream}
+    ports:
+      - "8081:8081"
