@@ -185,12 +185,29 @@ class MjpegHandler(BaseHTTPRequestHandler):
             return
 
 
+def start_http_server_background(
+    host: str | None = None,
+    port: int | None = None,
+) -> ThreadingHTTPServer:
+    """Serve /stream/mjpeg from latest_frame (no independent frame loop)."""
+    bind_host = host or os.environ.get("CAMERA_MJPEG_HOST", DEFAULT_HOST)
+    bind_port = port if port is not None else int(os.environ.get("CAMERA_MJPEG_PORT", str(DEFAULT_PORT)))
+    server = ThreadingHTTPServer((bind_host, bind_port), MjpegHandler)
+    thread = threading.Thread(target=server.serve_forever, name="mjpeg-http", daemon=True)
+    thread.start()
+    auth_state = "enabled" if STREAM_SECRET else "disabled"
+    print(
+        f"MJPEG listening on http://{bind_host}:{bind_port}/stream/mjpeg auth={auth_state}",
+        flush=True,
+    )
+    return server
+
+
 def main():
+    """Standalone MJPEG-only mode (own frame loop). Prefer camera_to_mqtt for synced MQTT+MJPEG."""
     input_dir = stream.resolve_input_dir(
         Path(os.environ.get("CAMERA_INPUT", "data/content/dataset"))
     )
-    host = os.environ.get("CAMERA_MJPEG_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("CAMERA_MJPEG_PORT", str(DEFAULT_PORT)))
     interval = float(
         os.environ.get(
             "CAMERA_STREAM_INTERVAL",
@@ -212,19 +229,14 @@ def main():
         daemon=True,
     )
     worker.start()
-
-    server = ThreadingHTTPServer((host, port), MjpegHandler)
-    auth_state = "enabled" if STREAM_SECRET else "disabled"
-    print(
-        f"MJPEG listening on http://{host}:{port}/stream/mjpeg "
-        f"input={input_dir} auth={auth_state}",
-        flush=True,
-    )
+    server = start_http_server_background()
     try:
-        server.serve_forever()
+        while worker.is_alive():
+            time.sleep(1)
     except KeyboardInterrupt:
         pass
     finally:
+        server.shutdown()
         server.server_close()
 
 
