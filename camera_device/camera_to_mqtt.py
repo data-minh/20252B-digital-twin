@@ -1,10 +1,15 @@
 import argparse
+import hashlib
 import json
 import os
 import time
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
+import ssl
+import base64
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 
 import stream_clean_to_json as stream
 
@@ -78,6 +83,74 @@ def configure_mqtt_auth(client, username: str | None = None, password: str | Non
         client.username_pw_set(username, password or None)
 
 
+def configure_mqtt_tls(client, ca_certs: str | None = None, certfile: str | None = None, keyfile: str | None = None, insecure: bool = False):
+    """Cấu hình TLS cho client MQTT nếu được cung cấp các file chứng chỉ.
+
+    Args:
+        client: mqtt.Client instance
+        ca_certs: path to CA certificate file
+        certfile: path to client certificate (optional)
+        keyfile: path to client private key (optional)
+        insecure: if True, do not verify hostname (tls_insecure_set)
+    """
+    if ca_certs or certfile or keyfile:
+        client.tls_set(ca_certs if ca_certs else None, certfile=certfile, keyfile=keyfile, tls_version=ssl.PROTOCOL_TLS_CLIENT)
+        client.tls_insecure_set(insecure)
+
+
+def normalize_aes_key(key: bytes | str | None) -> bytes | None:
+    """Normalize a raw key into a valid AES key length."""
+    if key is None:
+        return None
+    if isinstance(key, str):
+        key_bytes = key.encode("utf-8")
+    else:
+        key_bytes = key
+
+    if len(key_bytes) in (16, 24, 32):
+        return key_bytes
+    return hashlib.sha256(key_bytes).digest()
+
+
+def load_encryption_key(path_or_env: str | None) -> bytes | None:
+    """Load encryption key from file path or raw/base64 string.
+
+    File input is treated as plain text and encoded to UTF-8 bytes. If the input
+    is a base64 string, it is decoded. Returns a normalized AES key or None.
+    """
+    if not path_or_env:
+        return None
+
+    env_key = os.environ.get("ENCRYPTION_KEY")
+
+    try:
+        p = Path(path_or_env)
+        if p.exists():
+            text = p.read_text(encoding="utf-8").strip()
+            return normalize_aes_key(text)
+    except Exception:
+        pass
+
+    if env_key and (str(path_or_env).startswith("/") or "\\" in str(path_or_env) or str(path_or_env).endswith((".txt", ".key", ".pem", ".bin"))):
+        return normalize_aes_key(env_key)
+
+    try:
+        return normalize_aes_key(base64.b64decode(path_or_env))
+    except Exception:
+        return normalize_aes_key(path_or_env)
+
+
+def encrypt_payload_aes_gcm(key: bytes, plaintext_bytes: bytes) -> str:
+    """Encrypt plaintext using AES-GCM and return base64(nonce|tag|ciphertext)."""
+    if not key or len(key) not in (16, 24, 32):
+        raise ValueError("Encryption key must be 16, 24, or 32 bytes")
+    nonce = get_random_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext_bytes)
+    packaged = nonce + tag + ciphertext
+    return base64.b64encode(packaged).decode('ascii')
+
+
 def connect_mqtt_with_retry(client, mqtt_host: str, mqtt_port: int, retry_delay_seconds: float = 2):
     """Kết nối tới broker MQTT và thử lại liên tục nếu gặp lỗi tạm thời.
 
@@ -114,6 +187,13 @@ def publish_dataset(
     loop_dataset: bool = True,
     mqtt_username: str | None = None,
     mqtt_password: str | None = None,
+    use_tls: bool = False,
+    ca_certs: str | None = None,
+    client_cert: str | None = None,
+    client_key: str | None = None,
+    tls_insecure: bool = False,
+    encrypt_payload: bool = False,
+    encryption_key_spec: str | None = None,
 ):
     """Đẩy tất cả các khung hình từ thư mục dataset lên topic MQTT.
 
@@ -145,8 +225,16 @@ def publish_dataset(
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     configure_mqtt_auth(client, mqtt_username, mqtt_password)
+    if use_tls:
+        configure_mqtt_tls(client, ca_certs=ca_certs, certfile=client_cert, keyfile=client_key, insecure=tls_insecure)
     connect_mqtt_with_retry(client, mqtt_host, mqtt_port)
     client.loop_start()
+
+    encryption_key = None
+    if encrypt_payload:
+        encryption_key = load_encryption_key(encryption_key_spec or os.environ.get('ENCRYPTION_KEY'))
+        if not encryption_key:
+            raise RuntimeError('encrypt_payload enabled but no valid encryption key provided via --encryption-key-file or ENCRYPTION_KEY env')
 
     effective_start_timestamp = stream.resolve_start_timestamp(start_timestamp)
 
@@ -173,8 +261,12 @@ def publish_dataset(
                     f"source_frame_id={frame_id} slots={len(payload)} topic={topic}",
                     flush=True,
                 )
-                print(f"Camera payload: {message_json}", flush=True)
-                result = client.publish(topic, message_json, qos=1)
+                print(f"Camera plaintext payload: {message_json}", flush=True)
+                to_send = message_json
+                if encrypt_payload:
+                    to_send = encrypt_payload_aes_gcm(encryption_key, message_json.encode('utf-8'))
+                    print(f"Camera encrypted payload: {to_send}", flush=True)
+                result = client.publish(topic, to_send, qos=1)
                 result.wait_for_publish()
                 published += 1
                 published_this_cycle += 1
@@ -217,6 +309,13 @@ def main():
     parser.add_argument("--topic", default=os.environ.get("MQTT_TOPIC", "parking/frames"))
     parser.add_argument("--mqtt-username", default=os.environ.get("MQTT_USERNAME"))
     parser.add_argument("--mqtt-password", default=os.environ.get("MQTT_PASSWORD"))
+    parser.add_argument("--tls", action="store_true", default=optional_bool(os.environ.get("MQTT_TLS"), False), help="Enable TLS (MQTTS) when connecting to broker")
+    parser.add_argument("--ca-certs", default=os.environ.get("MQTT_CA_CERTS"), help="Path to CA cert file for TLS")
+    parser.add_argument("--client-cert", default=os.environ.get("MQTT_CLIENT_CERT"), help="Path to client cert file (optional, for mTLS)")
+    parser.add_argument("--client-key", default=os.environ.get("MQTT_CLIENT_KEY"), help="Path to client private key (optional, for mTLS)")
+    parser.add_argument("--tls-insecure", action="store_true", default=optional_bool(os.environ.get("MQTT_TLS_INSECURE"), False), help="If set, do not verify server hostname (not recommended)")
+    parser.add_argument("--encrypt-payload", action="store_true", default=optional_bool(os.environ.get("ENCRYPT_PAYLOAD"), False), help="Encrypt payloads with AES-GCM before publishing")
+    parser.add_argument("--encryption-key-file", default=os.environ.get("ENCRYPTION_KEY_FILE") or os.environ.get("ENCRYPTION_KEY"), help="Path to encryption key file or base64 key in env ENCRYPTION_KEY")
     parser.add_argument("--publish-interval", type=float, default=float(os.environ.get("CAMERA_PUBLISH_INTERVAL", "1")))
     parser.add_argument("--start-delay", type=float, default=float(os.environ.get("CAMERA_START_DELAY", "5")))
     parser.add_argument("--max-frames", type=int, default=optional_int(os.environ.get("MAX_FRAMES")))
@@ -244,6 +343,13 @@ def main():
         loop_dataset=args.loop_dataset,
         mqtt_username=args.mqtt_username,
         mqtt_password=args.mqtt_password,
+        use_tls=args.tls,
+        ca_certs=args.ca_certs,
+        client_cert=args.client_cert,
+        client_key=args.client_key,
+        tls_insecure=args.tls_insecure,
+        encrypt_payload=args.encrypt_payload,
+        encryption_key_spec=args.encryption_key_file,
     )
 
 

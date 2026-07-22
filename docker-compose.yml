@@ -30,6 +30,8 @@ services:
       MQTT_TOPIC: ${MQTT_TOPIC:-parking/frames}
       MQTT_USERNAME: ${MQTT_SUB_USERNAME}
       MQTT_PASSWORD: ${MQTT_SUB_PASSWORD}
+      ENCRYPTION_KEY_FILE: /tmp/mqtt_encryption_key.txt
+      ENCRYPTION_KEY: 0123456789abcdef
 
   camera-device:
     image: minh333/parking-camera-device:latest
@@ -56,5 +58,7 @@ services:
       CAMERA_START_DELAY: "5"
       CAMERA_MJPEG_PORT: "8081"
       CAMERA_STREAM_SECRET: ${CAMERA_STREAM_SECRET:-change-me-camera-stream}
+      ENCRYPTION_KEY_FILE: /tmp/mqtt_encryption_key.txt
+      ENCRYPTION_KEY: 0123456789abcdef
     ports:
       - "8081:8081"

@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import time
@@ -6,6 +7,9 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 
 import paho.mqtt.client as mqtt
+import ssl
+import base64
+from Crypto.Cipher import AES
 
 try:
     import psycopg2
@@ -403,7 +407,73 @@ def configure_mqtt_auth(client, username: str | None = None, password: str | Non
         client.username_pw_set(username, password or None)
 
 
-def run_sink(mqtt_host: str, mqtt_port: int, topic: str, mqtt_username: str | None = None, mqtt_password: str | None = None):
+def configure_mqtt_tls(client, ca_certs: str | None = None, certfile: str | None = None, keyfile: str | None = None, insecure: bool = False):
+    if ca_certs or certfile or keyfile:
+        client.tls_set(ca_certs if ca_certs else None, certfile=certfile, keyfile=keyfile, tls_version=ssl.PROTOCOL_TLS_CLIENT)
+        client.tls_insecure_set(insecure)
+
+
+def normalize_aes_key(key: bytes | str | None) -> bytes | None:
+    if key is None:
+        return None
+    if isinstance(key, str):
+        key_bytes = key.encode("utf-8")
+    else:
+        key_bytes = key
+
+    if len(key_bytes) in (16, 24, 32):
+        return key_bytes
+    return hashlib.sha256(key_bytes).digest()
+
+
+def load_encryption_key(path_or_env: str | None) -> bytes | None:
+    if not path_or_env:
+        return None
+
+    env_key = os.environ.get("ENCRYPTION_KEY")
+
+    try:
+        p = Path(path_or_env)
+        if p.exists():
+            text = p.read_text(encoding="utf-8").strip()
+            return normalize_aes_key(text)
+    except Exception:
+        pass
+
+    if env_key and (str(path_or_env).startswith("/") or "\\" in str(path_or_env) or str(path_or_env).endswith((".txt", ".key", ".pem", ".bin"))):
+        return normalize_aes_key(env_key)
+
+    try:
+        return normalize_aes_key(base64.b64decode(path_or_env))
+    except Exception:
+        return normalize_aes_key(path_or_env)
+
+
+def decrypt_aes_gcm(key: bytes, b64payload: bytes) -> bytes:
+    data = base64.b64decode(b64payload)
+    if len(data) < 28:
+        raise ValueError("ciphertext too short for nonce+tag")
+    nonce = data[:12]
+    tag = data[12:28]
+    ciphertext = data[28:]
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+    return plaintext
+
+
+def run_sink(
+    mqtt_host: str,
+    mqtt_port: int,
+    topic: str,
+    mqtt_username: str | None = None,
+    mqtt_password: str | None = None,
+    use_tls: bool = False,
+    ca_certs: str | None = None,
+    client_cert: str | None = None,
+    client_key: str | None = None,
+    tls_insecure: bool = False,
+    encryption_key_spec: str | None = None,
+):
     """Chạy service lắng nghe MQTT và ghi dữ liệu vào PostgreSQL.
 
     Hàm này kết nối tới database, đăng ký listener cho topic MQTT, nhận tin
@@ -419,17 +489,37 @@ def run_sink(mqtt_host: str, mqtt_port: int, topic: str, mqtt_username: str | No
     conn = wait_for_postgres()
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     configure_mqtt_auth(client, mqtt_username, mqtt_password)
+    if use_tls:
+        configure_mqtt_tls(client, ca_certs=ca_certs, certfile=client_cert, keyfile=client_key, insecure=tls_insecure)
+
+    encryption_key = load_encryption_key(encryption_key_spec or os.environ.get('ENCRYPTION_KEY'))
 
     def on_connect(client, userdata, flags, reason_code, properties):
         print(f"Postgres sink connected to MQTT reason_code={reason_code}; subscribing topic={topic}", flush=True)
         client.subscribe(topic, qos=1)
 
     def on_message(client, userdata, msg):
+        raw_payload = msg.payload.decode("utf-8", errors="replace")
+        print(f"Postgres sink raw payload on {msg.topic}: {raw_payload}", flush=True)
+
         try:
-            message = json.loads(msg.payload.decode("utf-8"))
+            message = json.loads(raw_payload)
+            print("Postgres sink parsed as plaintext JSON", flush=True)
             upload_frame_message(conn, message)
-        except Exception as exc:
-            print(f"Postgres sink failed to process MQTT message on {msg.topic}: {exc}", flush=True)
+            return
+        except Exception:
+            if encryption_key:
+                try:
+                    plaintext = decrypt_aes_gcm(encryption_key, msg.payload)
+                    decrypted_text = plaintext.decode("utf-8", errors="replace")
+                    print(f"Postgres sink decrypted payload on {msg.topic}: {decrypted_text}", flush=True)
+                    message = json.loads(decrypted_text)
+                    upload_frame_message(conn, message)
+                    return
+                except Exception as exc:
+                    print(f"Postgres sink failed to decrypt/parse payload on {msg.topic}: {exc}", flush=True)
+            else:
+                print(f"Postgres sink received non-JSON payload but no encryption key configured on {msg.topic}", flush=True)
             try:
                 conn.rollback()
             except Exception:
@@ -460,9 +550,27 @@ def main():
     parser.add_argument("--topic", default=os.environ.get("MQTT_TOPIC", "parking/frames"))
     parser.add_argument("--mqtt-username", default=os.environ.get("MQTT_USERNAME"))
     parser.add_argument("--mqtt-password", default=os.environ.get("MQTT_PASSWORD"))
+    parser.add_argument("--tls", action="store_true", default=os.environ.get("MQTT_TLS") in ("1", "true", "True"))
+    parser.add_argument("--ca-certs", default=os.environ.get("MQTT_CA_CERTS"))
+    parser.add_argument("--client-cert", default=os.environ.get("MQTT_CLIENT_CERT"))
+    parser.add_argument("--client-key", default=os.environ.get("MQTT_CLIENT_KEY"))
+    parser.add_argument("--tls-insecure", action="store_true", default=os.environ.get("MQTT_TLS_INSECURE") in ("1", "true", "True"))
+    parser.add_argument("--encryption-key-file", default=os.environ.get("ENCRYPTION_KEY_FILE") or os.environ.get("ENCRYPTION_KEY"))
     args = parser.parse_args()
 
-    run_sink(args.mqtt_host, args.mqtt_port, args.topic, args.mqtt_username, args.mqtt_password)
+    run_sink(
+        args.mqtt_host,
+        args.mqtt_port,
+        args.topic,
+        args.mqtt_username,
+        args.mqtt_password,
+        use_tls=args.tls,
+        ca_certs=args.ca_certs,
+        client_cert=args.client_cert,
+        client_key=args.client_key,
+        tls_insecure=args.tls_insecure,
+        encryption_key_spec=args.encryption_key_file,
+    )
 
 
 if __name__ == "__main__":
