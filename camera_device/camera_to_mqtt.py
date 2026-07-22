@@ -4,6 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Callable
 
 import paho.mqtt.client as mqtt
 import ssl
@@ -194,13 +195,9 @@ def publish_dataset(
     tls_insecure: bool = False,
     encrypt_payload: bool = False,
     encryption_key_spec: str | None = None,
+    on_frame_jpeg: Callable[[bytes, str], None] | None = None,
 ):
-    """Đẩy tất cả các khung hình từ thư mục dataset lên topic MQTT.
-
-    Hàm này duyệt qua dataset, bỏ qua các khung hình không có file nhãn,
-    tạo payload JSON cho từng khung hình và gửi tới topic MQTT đã cấu hình.
-    Nó có thể lặp lại dataset nhiều vòng, chờ trước khi phát và dừng sau khi
-    đạt số khung hình tối đa.
+    """Đẩy khung hình lên MQTT; tùy chọn đồng bộ MJPEG qua on_frame_jpeg(jpeg, source_frame_id).
 
     Args:
         input_dir: Thư mục chứa các file hình ảnh và file nhãn của dataset.
@@ -215,6 +212,7 @@ def publish_dataset(
         loop_dataset: Có lặp lại dataset vô hạn hay không.
         mqtt_username: Tên đăng nhập MQTT tùy chọn để xác thực.
         mqtt_password: Mật khẩu MQTT tùy chọn để xác thực.
+        on_frame_jpeg: Callback đồng bộ video MJPEG (cùng source_frame_id với MQTT).
 
     Returns:
         int: Tổng số khung hình đã được publish.
@@ -248,6 +246,10 @@ def publish_dataset(
                     print(f"Camera skipped {image_file}: missing label {label_file}", flush=True)
                     continue
 
+                jpeg = image_file.read_bytes()
+                if on_frame_jpeg is not None:
+                    on_frame_jpeg(jpeg, frame_id)
+
                 payload = stream.frame_payload(
                     frame_id,
                     label_file,
@@ -272,7 +274,8 @@ def publish_dataset(
                 published_this_cycle += 1
                 print(
                     f"Camera published cycle={cycle} frame_id={message['frame_id']} "
-                    f"source_frame_id={frame_id} slots={len(payload)} topic={topic}",
+                    f"source_frame_id={frame_id} slots={len(payload)} "
+                    f"mjpeg_bytes={len(jpeg) if on_frame_jpeg else 0} topic={topic}",
                     flush=True,
                 )
 
@@ -296,13 +299,8 @@ def publish_dataset(
 
 
 def main():
-    """Chạy trình publish camera dưới dạng script CLI.
-
-    Điểm vào này phân tích các tham số dòng lệnh, giải quyết thư mục dataset
-    đầu vào và bắt đầu gửi các khung hình tới broker MQTT bằng các tùy chọn
-    đã cấu hình.
-    """
-    parser = argparse.ArgumentParser(description="Publish parking frame payloads to MQTT.")
+    """Chạy camera: một vòng publish chung cho MQTT + MJPEG (cùng source_frame_id)."""
+    parser = argparse.ArgumentParser(description="Publish parking frames to MQTT + MJPEG (synced).")
     parser.add_argument("--input", default=os.environ.get("CAMERA_INPUT", "data/content/dataset"))
     parser.add_argument("--mqtt-host", default=os.environ.get("MQTT_HOST", "mqtt-broker"))
     parser.add_argument("--mqtt-port", type=int, default=int(os.environ.get("MQTT_PORT", "1883")))
@@ -329,6 +327,10 @@ def main():
     )
     args = parser.parse_args()
 
+    from mjpeg_server import latest_frame, start_http_server_background
+
+    start_http_server_background()
+
     input_dir = stream.resolve_input_dir(Path(args.input))
     publish_dataset(
         input_dir=input_dir,
@@ -350,6 +352,7 @@ def main():
         tls_insecure=args.tls_insecure,
         encrypt_payload=args.encrypt_payload,
         encryption_key_spec=args.encryption_key_file,
+        on_frame_jpeg=latest_frame.publish,
     )
 
 
