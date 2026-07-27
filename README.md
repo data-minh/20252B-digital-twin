@@ -245,6 +245,83 @@ timestamp without time zone, precision 6
 python -m pytest -q
 ```
 
+## Train model du doan thoi diem bai day
+
+Model su dung suc chua co dinh 60 vi tri va du doan so giay con lai
+den khi bai dat 60/60. Ket qua luon nam trong khoang 0 den 10800 giay.
+
+Model duoc train ben ngoai container va luu tai:
+
+```text
+models/parking_fill_eta/
+  model.joblib
+  metadata.json
+  feature_schema.json
+```
+
+Cai dependency:
+
+```powershell
+python -m pip install -r ml_service/requirements.txt
+```
+
+Tao 30 ngay du lieu gia lap va luu SCD2 vao PostgreSQL:
+
+```powershell
+$simulationRunId = [guid]::NewGuid().ToString()
+python -m ml_service.simulation_repository --days 30 --seed 20260727 --run-id $simulationRunId
+```
+
+Tao feature/target trong bang `parking_model_training_data`:
+
+```powershell
+python -m ml_service.materialize_training --simulation-run-id $simulationRunId
+```
+
+Train model va ghi metadata vao `parking_model_registry`:
+
+```powershell
+python -m ml_service.train --simulation-run-id $simulationRunId --model-version v1 --sample-stride 3 --max-iter 150
+```
+
+`--sample-stride 3` lay deu moi mau thu ba tren toan bo timeline 30
+ngay, giup train nhanh hon nhung van giu nguyen thu tu thoi gian va ba
+tap train/validation/test.
+
+Sau khi co du ba artifact, build image inference:
+
+```powershell
+docker compose build prediction-service
+docker compose up -d
+```
+
+`prediction-service` subscribe truc tiep topic MQTT `parking/frames`.
+Moi frame tao toi da mot dong trong `parking_fill_predictions`.
+
+Kiem tra ket qua realtime:
+
+```sql
+SELECT observed_at,
+       occupied_count,
+       predicted_seconds_to_full,
+       predicted_fill_at,
+       model_version
+FROM parking_fill_predictions
+ORDER BY prediction_id DESC
+LIMIT 50;
+```
+
+Bang du lieu ML:
+
+```text
+parking_slots
+parking_simulation_runs
+parking_simulated_slot_history
+parking_model_training_data
+parking_model_registry
+parking_fill_predictions
+```
+
 ## Luu y khi push GitHub
 
 Khong push cac file/folder sau:

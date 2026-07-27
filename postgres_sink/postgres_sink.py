@@ -36,7 +36,7 @@ def unix_timestamp_to_datetime(value):
     return datetime.fromtimestamp(int(value), tz=LOCAL_TIMESTAMP_TIMEZONE).replace(tzinfo=None)
 
 
-def record_unique_id(frame_id, slot_id):
+def record_unique_id(source_event_id, slot_id):
     """Tạo một khóa duy nhất cho một bản ghi lịch sử của slot.
 
     Giá trị này được tạo bằng hàm băm SHA-256 từ frame_id và slot_id, nhằm
@@ -49,7 +49,7 @@ def record_unique_id(frame_id, slot_id):
     Returns:
         str: Chuỗi hash dùng làm unique_id.
     """
-    return sha256(f"{frame_id}:{slot_id}".encode("utf-8")).hexdigest()
+    return sha256(f"{source_event_id}:{slot_id}".encode("utf-8")).hexdigest()
 
 
 def history_row(record):
@@ -64,9 +64,14 @@ def history_row(record):
     Returns:
         dict: Bản ghi đã được chuẩn hóa để insert vào PostgreSQL.
     """
+    return sha256(f"{source_event_id}:{slot_id}".encode("utf-8")).hexdigest()
+
+
+def history_row(record, source_event_id):
     event_time = unix_timestamp_to_datetime(record["timestamp"])
     return {
-        "unique_id": record_unique_id(record["frame_id"], record["id"]),
+        "unique_id": record_unique_id(source_event_id, record["id"]),
+        "source_event_id": source_event_id,
         "frame_id": int(record["frame_id"]),
         "id": str(record["id"]),
         "occupied": int(record["occupied"]),
@@ -150,6 +155,7 @@ def ensure_schema(conn):
             f"""
             CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
                 unique_id TEXT PRIMARY KEY,
+                source_event_id TEXT NOT NULL,
                 frame_id INTEGER NOT NULL,
                 id TEXT NOT NULL,
                 occupied INTEGER NOT NULL,
@@ -158,6 +164,12 @@ def ensure_schema(conn):
                 enddate TIMESTAMP(6) NULL,
                 status TEXT NOT NULL
             )
+            """
+        )
+        cursor.execute(
+            f"""
+            ALTER TABLE {TABLE_NAME}
+            ADD COLUMN IF NOT EXISTS source_event_id TEXT
             """
         )
         cursor.execute("SET TIME ZONE 'Asia/Ho_Chi_Minh'")
@@ -272,12 +284,14 @@ def insert_history_row(cursor, row):
     cursor.execute(
         f"""
         INSERT INTO {TABLE_NAME}
-            (unique_id, frame_id, id, occupied, "timestamp", startdate, enddate, status)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (unique_id, source_event_id, frame_id, id, occupied,
+             "timestamp", startdate, enddate, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (unique_id) DO NOTHING
         """,
         (
             row["unique_id"],
+            row["source_event_id"],
             row["frame_id"],
             row["id"],
             row["occupied"],
@@ -289,7 +303,7 @@ def insert_history_row(cursor, row):
     )
 
 
-def apply_scd2_record(conn, record):
+def apply_scd2_record(conn, record, source_event_id):
     """Áp dụng quy trình SCD2 cho một bản ghi đơn lẻ.
 
     Hàm này tạo bản ghi lịch sử mới và xử lý việc đóng bản ghi cũ nếu trạng
@@ -299,7 +313,7 @@ def apply_scd2_record(conn, record):
         conn: Đối tượng kết nối PostgreSQL.
         record: Một bản ghi dữ liệu slot.
     """
-    row = history_row(record)
+    row = history_row(record, source_event_id)
     with conn.cursor() as cursor:
         current = fetch_active_row(cursor, row["id"])
         for action in scd2_actions(current, row):
@@ -310,7 +324,7 @@ def apply_scd2_record(conn, record):
     conn.commit()
 
 
-def apply_scd2_records(conn, payload):
+def apply_scd2_records(conn, payload, source_event_id):
     """Áp dụng quy trình SCD2 cho toàn bộ payload nhận được.
 
     Hàm này xử lý nhiều bản ghi cùng lúc, tối ưu bằng cách lấy tất cả slot
@@ -323,7 +337,7 @@ def apply_scd2_records(conn, payload):
     Returns:
         dict: Thống kê số bản ghi inserted, closed và skipped.
     """
-    rows = [history_row(record) for record in payload]
+    rows = [history_row(record, source_event_id) for record in payload]
     summary = {"inserted": 0, "closed": 0, "skipped": 0}
 
     with conn.cursor() as cursor:
@@ -367,7 +381,7 @@ def upload_frame_message(conn, message):
     )
     print(f"Postgres sink message: {json.dumps(message, ensure_ascii=False)}", flush=True)
     print(f"Postgres sink payload: {json.dumps(payload, ensure_ascii=False)}", flush=True)
-    summary = apply_scd2_records(conn, payload)
+    summary = apply_scd2_records(conn, payload, message["source_event_id"])
     print(
         f"Postgres sink wrote frame_id={message.get('frame_id')} "
         f"inserted={summary['inserted']} closed={summary['closed']} skipped={summary['skipped']}",

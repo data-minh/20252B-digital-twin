@@ -126,14 +126,15 @@ def resolve_start_timestamp(start_timestamp: int | None = None) -> int:
 
 
 def frame_timestamp(frame_id, start_timestamp: int | None, frame_interval_seconds: int):
+    if start_timestamp is None:
+        return int(time.time())
     if isinstance(frame_id, int):
         frame_index = frame_id
     elif str(frame_id).isdigit():
         frame_index = int(frame_id)
     else:
         frame_index = 1
-    effective_start_timestamp = resolve_start_timestamp(start_timestamp)
-    return int(effective_start_timestamp + max(frame_index - 1, 0) * frame_interval_seconds)
+    return int(start_timestamp + max(frame_index - 1, 0) * frame_interval_seconds)
 
 
 def frame_payload(

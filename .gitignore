@@ -30,6 +30,12 @@ data/
 stream_json_outputs/
 data/stream_json_outputs/
 
+# Generated parking ETA model artifacts
+models/parking_fill_eta/*.joblib
+models/parking_fill_eta/metadata.json
+models/parking_fill_eta/feature_schema.json
+!models/parking_fill_eta/.gitkeep
+
 # Local notebooks/outputs
 .ipynb_checkpoints/
 

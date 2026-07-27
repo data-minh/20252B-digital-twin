@@ -5,6 +5,7 @@ import os
 import time
 from pathlib import Path
 from typing import Callable
+from uuid import uuid4
 
 import paho.mqtt.client as mqtt
 import ssl
@@ -48,7 +49,17 @@ def optional_bool(value, default=False):
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def frame_message(split: str, source_frame_id: str, image_file: str | Path, payload):
+def source_event_id(camera_session_id: str, cycle: int, frame_id: str):
+    return f"{camera_session_id}:{cycle}:{frame_id}"
+
+
+def frame_message(
+    split: str,
+    source_frame_id: str,
+    image_file: str | Path,
+    payload,
+    event_id: str,
+):
     """Tạo cấu trúc tin nhắn JSON để phát cho một khung hình từ camera.
 
     Dictionary kết quả chứa thông tin về phân chia dữ liệu, frame id đã giải
@@ -64,6 +75,7 @@ def frame_message(split: str, source_frame_id: str, image_file: str | Path, payl
         dict: Dictionary sẵn sàng để chuyển thành JSON và gửi qua MQTT.
     """
     return {
+        "source_event_id": event_id,
         "split": split,
         "frame_id": payload[0]["frame_id"] if payload else stream.parse_frame_id(source_frame_id),
         "source_frame_id": source_frame_id,
@@ -196,6 +208,7 @@ def publish_dataset(
     encrypt_payload: bool = False,
     encryption_key_spec: str | None = None,
     on_frame_jpeg: Callable[[bytes, str], None] | None = None,
+    camera_session_id: str | None = None,
 ):
     """Đẩy khung hình lên MQTT; tùy chọn đồng bộ MJPEG qua on_frame_jpeg(jpeg, source_frame_id).
 
@@ -238,6 +251,11 @@ def publish_dataset(
 
     published = 0
     cycle = 1
+    camera_session_id = (
+        camera_session_id
+        or os.environ.get("CAMERA_SESSION_ID")
+        or uuid4().hex
+    )
     try:
         while True:
             published_this_cycle = 0
@@ -256,7 +274,22 @@ def publish_dataset(
                     start_timestamp=effective_start_timestamp,
                     frame_interval_seconds=frame_interval_seconds,
                 )
-                message = frame_message(split, frame_id, image_file, payload)
+                event_timestamp = (
+                    effective_start_timestamp
+                    + published * frame_interval_seconds
+                )
+                payload = [
+                    {**record, "timestamp": event_timestamp}
+                    for record in payload
+                ]
+                event_id = source_event_id(camera_session_id, cycle, frame_id)
+                message = frame_message(
+                    split,
+                    frame_id,
+                    image_file,
+                    payload,
+                    event_id,
+                )
                 message_json = json.dumps(message, ensure_ascii=False)
                 print(
                     f"Camera publishing cycle={cycle} frame_id={message['frame_id']} "
