@@ -46,3 +46,6 @@ logs/
 
 # Docker local overrides
 docker-compose.override.yml
+
+# Isolated feature worktrees
+.worktrees/
