@@ -210,9 +210,16 @@ def test_camera_mqtt_message_wraps_frame_payload():
     camera = load_module_from_path("camera_to_mqtt", Path("camera_device/camera_to_mqtt.py"))
     payload = [{"frame_id": 1, "id": "A01", "occupied": 1, "timestamp": 1634567890}]
 
-    message = camera.frame_message("train", "0001", "data/content/dataset/train/images/0001.jpg", payload)
+    message = camera.frame_message(
+        "train",
+        "0001",
+        "data/content/dataset/train/images/0001.jpg",
+        payload,
+        "session-a:1:0001",
+    )
 
     assert message == {
+        "source_event_id": "session-a:1:0001",
         "split": "train",
         "frame_id": 1,
         "source_frame_id": "0001",
@@ -496,12 +503,13 @@ def test_postgres_history_row_uses_hash_unique_id_and_timestamps():
     sink = load_module_from_path("postgres_sink", Path("postgres_sink/postgres_sink.py"))
     record = {"frame_id": 2, "id": "A01", "occupied": 1, "timestamp": 1634567900}
 
-    row = sink.history_row(record)
+    row = sink.history_row(record, "session-a:1:0002")
 
-    expected_unique_id = sha256("2:A01".encode("utf-8")).hexdigest()
+    expected_unique_id = sha256("session-a:1:0002:A01".encode("utf-8")).hexdigest()
     expected_timestamp = datetime(2021, 10, 18, 21, 38, 20)
     assert row == {
         "unique_id": expected_unique_id,
+        "source_event_id": "session-a:1:0002",
         "frame_id": 2,
         "id": "A01",
         "occupied": 1,
@@ -517,7 +525,10 @@ def test_postgres_scd2_closes_changed_active_row_and_inserts_new_version():
     record = {"frame_id": 2, "id": "A01", "occupied": 1, "timestamp": 1634567900}
     current = {"unique_id": "old-version", "occupied": 0}
 
-    actions = sink.scd2_actions(current, sink.history_row(record))
+    actions = sink.scd2_actions(
+        current,
+        sink.history_row(record, "session-a:1:0002"),
+    )
 
     effective_time = datetime(2021, 10, 18, 21, 38, 20)
     assert actions == [
@@ -529,7 +540,7 @@ def test_postgres_scd2_closes_changed_active_row_and_inserts_new_version():
         },
         {
             "action": "insert",
-            "row": sink.history_row(record),
+            "row": sink.history_row(record, "session-a:1:0002"),
         },
     ]
 
@@ -539,7 +550,10 @@ def test_postgres_scd2_ignores_unchanged_active_row():
     record = {"frame_id": 3, "id": "A01", "occupied": 1, "timestamp": 1634567910}
     current = {"unique_id": "current-version", "occupied": 1}
 
-    actions = sink.scd2_actions(current, sink.history_row(record))
+    actions = sink.scd2_actions(
+        current,
+        sink.history_row(record, "session-a:1:0003"),
+    )
 
     assert actions == []
 
@@ -627,6 +641,7 @@ def test_postgres_applies_frame_payload_in_one_transaction(monkeypatch):
             {"frame_id": 2, "id": "A02", "occupied": 1, "timestamp": 1634567900},
             {"frame_id": 2, "id": "A03", "occupied": 0, "timestamp": 1634567900},
         ],
+        "session-a:1:0002",
     )
 
     assert summary == {"inserted": 2, "closed": 1, "skipped": 1}

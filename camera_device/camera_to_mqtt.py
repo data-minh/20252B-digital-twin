@@ -3,6 +3,7 @@ import json
 import os
 import time
 from pathlib import Path
+from uuid import uuid4
 
 import paho.mqtt.client as mqtt
 
@@ -19,8 +20,19 @@ def optional_bool(value, default=False):
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def frame_message(split: str, source_frame_id: str, image_file: str | Path, payload):
+def source_event_id(camera_session_id: str, cycle: int, frame_id: str):
+    return f"{camera_session_id}:{cycle}:{frame_id}"
+
+
+def frame_message(
+    split: str,
+    source_frame_id: str,
+    image_file: str | Path,
+    payload,
+    event_id: str,
+):
     return {
+        "source_event_id": event_id,
         "split": split,
         "frame_id": payload[0]["frame_id"] if payload else stream.parse_frame_id(source_frame_id),
         "source_frame_id": source_frame_id,
@@ -56,6 +68,7 @@ def publish_dataset(
     loop_dataset: bool = True,
     mqtt_username: str | None = None,
     mqtt_password: str | None = None,
+    camera_session_id: str | None = None,
 ):
     if start_delay_seconds > 0:
         print(f"Camera waiting {start_delay_seconds} seconds before publishing", flush=True)
@@ -68,6 +81,11 @@ def publish_dataset(
 
     published = 0
     cycle = 1
+    camera_session_id = (
+        camera_session_id
+        or os.environ.get("CAMERA_SESSION_ID")
+        or uuid4().hex
+    )
     try:
         while True:
             published_this_cycle = 0
@@ -82,7 +100,14 @@ def publish_dataset(
                     start_timestamp=start_timestamp,
                     frame_interval_seconds=frame_interval_seconds,
                 )
-                message = frame_message(split, frame_id, image_file, payload)
+                event_id = source_event_id(camera_session_id, cycle, frame_id)
+                message = frame_message(
+                    split,
+                    frame_id,
+                    image_file,
+                    payload,
+                    event_id,
+                )
                 result = client.publish(topic, json.dumps(message), qos=1)
                 result.wait_for_publish()
                 published += 1
