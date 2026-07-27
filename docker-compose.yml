@@ -53,3 +53,24 @@ services:
       CAMERA_FRAME_INTERVAL_SECONDS: "1"
       CAMERA_LOOP_DATASET: "true"
       CAMERA_START_DELAY: "5"
+
+  prediction-service:
+    image: minh333/parking-prediction-service:latest
+    build:
+      context: .
+      dockerfile: ml_service/Dockerfile
+    container_name: parking-prediction-service
+    depends_on:
+      mqtt-broker:
+        condition: service_started
+      postgres-sink:
+        condition: service_started
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      MQTT_HOST: mqtt-broker
+      MQTT_PORT: "1883"
+      MQTT_TOPIC: ${MQTT_TOPIC:-parking/frames}
+      MQTT_USERNAME: ${MQTT_SUB_USERNAME}
+      MQTT_PASSWORD: ${MQTT_SUB_PASSWORD}
+      MQTT_CLIENT_ID: parking-prediction-service
+      MODEL_DIR: /app/models/parking_fill_eta
