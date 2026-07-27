@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 STORAGE_CHOICES = {"json", "thingspeak", "both"}
 THINGSPEAK_UPLOAD_MODES = {"frame", "slot"}
-DEFAULT_START_TIMESTAMP = 1634567890
+DEFAULT_START_TIMESTAMP = None
 DEFAULT_FRAME_INTERVAL_SECONDS = 1
 DEFAULT_THINGSPEAK_CHANNEL_ID_ENV = "THINGSPEAK_CHANNEL_ID"
 DEFAULT_THINGSPEAK_USER_API_KEY_ENV = "THINGSPEAK_USER_API_KEY"
@@ -119,20 +119,27 @@ def parse_frame_id(frame_id: str):
     return int(frame_id) if frame_id.isdigit() else frame_id
 
 
-def frame_timestamp(frame_id, start_timestamp: int, frame_interval_seconds: int):
+def resolve_start_timestamp(start_timestamp: int | None = None) -> int:
+    if start_timestamp is None:
+        return int(time.time())
+    return int(start_timestamp)
+
+
+def frame_timestamp(frame_id, start_timestamp: int | None, frame_interval_seconds: int):
     if isinstance(frame_id, int):
         frame_index = frame_id
     elif str(frame_id).isdigit():
         frame_index = int(frame_id)
     else:
         frame_index = 1
-    return int(start_timestamp + max(frame_index - 1, 0) * frame_interval_seconds)
+    effective_start_timestamp = resolve_start_timestamp(start_timestamp)
+    return int(effective_start_timestamp + max(frame_index - 1, 0) * frame_interval_seconds)
 
 
 def frame_payload(
     frame_id: str,
     label_file: Path,
-    start_timestamp: int = DEFAULT_START_TIMESTAMP,
+    start_timestamp: int | None = None,
     frame_interval_seconds: int = DEFAULT_FRAME_INTERVAL_SECONDS,
 ):
     boxes = parse_label(label_file)
@@ -263,7 +270,7 @@ def process_frame(
     thingspeak_api_key_env: str = "THINGSPEAK_API_KEY",
     thingspeak_delay_seconds: float = 0,
     frame_id: str | None = None,
-    start_timestamp: int = DEFAULT_START_TIMESTAMP,
+    start_timestamp: int | None = None,
     frame_interval_seconds: int = DEFAULT_FRAME_INTERVAL_SECONDS,
     thingspeak_upload_mode: str = "slot",
 ):
@@ -358,7 +365,7 @@ def process_once(
     thingspeak_api_key_env: str = "THINGSPEAK_API_KEY",
     thingspeak_delay_seconds: float = 0,
     max_frames: int | None = None,
-    start_timestamp: int = DEFAULT_START_TIMESTAMP,
+    start_timestamp: int | None = None,
     frame_interval_seconds: int = DEFAULT_FRAME_INTERVAL_SECONDS,
     thingspeak_upload_mode: str = "slot",
     frame_upload_interval: float = 0,
@@ -405,7 +412,7 @@ def watch(
     thingspeak_url_env: str = "THINGSPEAK_URL",
     thingspeak_api_key_env: str = "THINGSPEAK_API_KEY",
     thingspeak_delay_seconds: float = 0,
-    start_timestamp: int = DEFAULT_START_TIMESTAMP,
+    start_timestamp: int | None = None,
     frame_interval_seconds: int = DEFAULT_FRAME_INTERVAL_SECONDS,
     thingspeak_upload_mode: str = "slot",
     frame_upload_interval: float = 0,
@@ -535,8 +542,8 @@ def main():
     parser.add_argument(
         "--start-timestamp",
         type=int,
-        default=DEFAULT_START_TIMESTAMP,
-        help="Unix timestamp used for the first frame.",
+        default=None,
+        help="Unix timestamp used for the first frame. If omitted, the current time is used.",
     )
     parser.add_argument(
         "--frame-interval-seconds",

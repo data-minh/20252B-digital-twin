@@ -69,6 +69,15 @@ def test_default_payload_timestamp_increments_one_second_per_frame(tmp_path):
     assert payload == [{"frame_id": 710, "id": "A01", "occupied": 1, "timestamp": 1634568599}]
 
 
+def test_payload_uses_current_time_when_start_timestamp_is_missing(tmp_path, monkeypatch):
+    image, labels = write_frame(tmp_path, frame_id="0003", label_text="1 0.10 0.10 0.05 0.05\n")
+    monkeypatch.setattr(stream.time, "time", lambda: 1712345678)
+
+    payload = stream.frame_payload(image.stem, labels / "0003.txt")
+
+    assert payload[0]["timestamp"] == 1712345678
+
+
 def test_process_frame_skips_image_without_label(tmp_path):
     image, labels = write_frame(tmp_path, label_text=None)
 
