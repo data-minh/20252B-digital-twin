@@ -1,13 +1,15 @@
 import argparse
 import json
 from datetime import timedelta
+from itertools import islice
 from uuid import UUID
 
 from ml_service.features import (
     FEATURE_NAMES,
+    RollingFeatureBuilder,
     SLOT_FEATURE_NAMES,
     assign_temporal_split,
-    build_feature_rows,
+    snapshot_state,
 )
 from ml_service.schema import ensure_ml_schema
 from ml_service.simulation_repository import connect_database
@@ -94,36 +96,45 @@ def reconstruct_timeline(
     return tuple(snapshots), _label_snapshots(snapshots, full_events)
 
 
-def build_training_rows(snapshots, samples):
+def iter_training_rows(snapshots, samples):
     label_by_time = {
         sample.snapshot.observed_at: sample
         for sample in samples
     }
-    feature_rows = build_feature_rows(snapshots)
-    retained = [
-        row
-        for row in feature_rows
-        if row["observed_at"] in label_by_time
-    ]
-    result = []
-    total = len(retained)
-    for index, row in enumerate(retained):
-        label = label_by_time[row["observed_at"]]
-        result.append(
-            {
-                **row,
-                "next_full_at": label.next_full_at,
-                "seconds_to_full": label.seconds_to_full,
-                "dataset_split": assign_temporal_split(index, total),
-            }
-        )
-    return result
+    total = len(label_by_time)
+    retained_index = 0
+    builder = RollingFeatureBuilder()
+    for snapshot in sorted(
+        snapshots,
+        key=lambda item: item.observed_at,
+    ):
+        state = snapshot_state(snapshot)
+        builder.update(snapshot.observed_at, state)
+        label = label_by_time.get(snapshot.observed_at)
+        if label is None:
+            continue
+        yield {
+            "observed_at": snapshot.observed_at,
+            "features": builder.vector(snapshot.observed_at),
+            "slot_states": state,
+            "next_full_at": label.next_full_at,
+            "seconds_to_full": label.seconds_to_full,
+            "dataset_split": assign_temporal_split(
+                retained_index,
+                total,
+            ),
+        }
+        retained_index += 1
+
+
+def build_training_rows(snapshots, samples):
+    return list(iter_training_rows(snapshots, samples))
 
 
 def _training_params(run_id, row):
     features = row["features"]
     return (
-        run_id,
+        str(run_id),
         row["observed_at"],
         *(features[name] for name in SCALAR_FEATURE_COLUMNS),
         json.dumps(dict(features), separators=(",", ":")),
@@ -132,6 +143,22 @@ def _training_params(run_id, row):
         row["seconds_to_full"],
         row["dataset_split"],
     )
+
+
+TRAINING_VALUE_SQL = """
+    (
+        %s, %s,
+        %s, %s, %s,
+        %s, %s, %s,
+        %s, %s, %s,
+        %s, %s, %s,
+        %s, %s, %s,
+        %s, %s, %s,
+        %s, %s,
+        %s, %s, %s, %s,
+        %s::jsonb, %s::jsonb, %s, %s, %s
+    )
+"""
 
 
 TRAINING_INSERT_SQL = """
@@ -149,18 +176,7 @@ TRAINING_INSERT_SQL = """
         features, slot_states, next_full_at,
         seconds_to_full, dataset_split
     )
-    VALUES (
-        %s, %s,
-        %s, %s, %s,
-        %s, %s, %s,
-        %s, %s, %s,
-        %s, %s, %s,
-        %s, %s, %s,
-        %s, %s, %s,
-        %s, %s,
-        %s, %s, %s, %s,
-        %s::jsonb, %s::jsonb, %s, %s, %s
-    )
+    VALUES {values}
     ON CONFLICT (simulation_run_id, observed_at) DO UPDATE SET
         occupied_count = EXCLUDED.occupied_count,
         free_count = EXCLUDED.free_count,
@@ -177,29 +193,43 @@ def materialize_training_rows(
     conn,
     run_id,
     rows,
-    batch_size=5000,
+    batch_size=1000,
 ):
+    row_iterator = iter(rows)
+    count = 0
     try:
         with conn.cursor() as cursor:
-            for start in range(0, len(rows), batch_size):
-                batch = rows[start : start + batch_size]
-                cursor.executemany(
-                    TRAINING_INSERT_SQL,
-                    [_training_params(run_id, row) for row in batch],
+            while True:
+                batch = list(islice(row_iterator, batch_size))
+                if not batch:
+                    break
+                params = tuple(
+                    value
+                    for row in batch
+                    for value in _training_params(run_id, row)
                 )
+                cursor.execute(
+                    TRAINING_INSERT_SQL.format(
+                        values=",".join(
+                            [TRAINING_VALUE_SQL] * len(batch)
+                        )
+                    ),
+                    params,
+                )
+                count += len(batch)
             cursor.execute(
                 """
                 UPDATE parking_simulation_runs
                 SET sample_count = %s
                 WHERE simulation_run_id = %s
                 """,
-                (len(rows), run_id),
+                (count, str(run_id)),
             )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    return len(rows)
+    return count
 
 
 def load_timeline(conn, run_id):
@@ -210,7 +240,7 @@ def load_timeline(conn, run_id):
             FROM parking_simulation_runs
             WHERE simulation_run_id = %s
             """,
-            (run_id,),
+            (str(run_id),),
         )
         run = cursor.fetchone()
         if run is None:
@@ -225,7 +255,7 @@ def load_timeline(conn, run_id):
             WHERE simulation_run_id = %s
             ORDER BY startdate, slot_id
             """,
-            (run_id,),
+            (str(run_id),),
         )
         transitions = tuple(
             Transition(observed_at, slot_id, occupied)
@@ -251,7 +281,7 @@ def main():
     try:
         ensure_ml_schema(conn)
         snapshots, samples = load_timeline(conn, run_id)
-        rows = build_training_rows(snapshots, samples)
+        rows = iter_training_rows(snapshots, samples)
         count = materialize_training_rows(conn, run_id, rows)
     finally:
         conn.close()

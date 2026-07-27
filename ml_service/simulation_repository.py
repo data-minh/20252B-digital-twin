@@ -46,7 +46,7 @@ def transitions_to_scd2(run_id, transitions):
                         slot_id,
                         transition.observed_at,
                     ),
-                    "simulation_run_id": run_id,
+                    "simulation_run_id": str(run_id),
                     "slot_id": slot_id,
                     "occupied": transition.occupied,
                     "startdate": transition.observed_at,
@@ -67,6 +67,37 @@ def _json_parameters(config):
     return json.dumps(values, sort_keys=True)
 
 
+def _insert_history_rows(cursor, rows, page_size=500):
+    for start in range(0, len(rows), page_size):
+        page = rows[start : start + page_size]
+        placeholders = ",".join(
+            ["(%s, %s, %s, %s, %s, %s, %s)"] * len(page)
+        )
+        params = []
+        for row in page:
+            params.extend(
+                (
+                    row["unique_id"],
+                    row["simulation_run_id"],
+                    row["slot_id"],
+                    row["occupied"],
+                    row["startdate"],
+                    row["enddate"],
+                    row["status"],
+                )
+            )
+        cursor.execute(
+            f"""
+            INSERT INTO parking_simulated_slot_history
+                (unique_id, simulation_run_id, slot_id, occupied,
+                 startdate, enddate, status)
+            VALUES {placeholders}
+            ON CONFLICT (unique_id) DO NOTHING
+            """,
+            tuple(params),
+        )
+
+
 def persist_simulation(conn, config, result, run_id):
     run_id = UUID(str(run_id))
     rows = transitions_to_scd2(run_id, result.transitions)
@@ -83,7 +114,7 @@ def persist_simulation(conn, config, result, run_id):
                 ON CONFLICT (simulation_run_id) DO NOTHING
                 """,
                 (
-                    run_id,
+                    str(run_id),
                     config.seed,
                     SIMULATOR_VERSION,
                     config.start,
@@ -94,27 +125,7 @@ def persist_simulation(conn, config, result, run_id):
                     result.excluded_count,
                 ),
             )
-            cursor.executemany(
-                """
-                INSERT INTO parking_simulated_slot_history
-                    (unique_id, simulation_run_id, slot_id, occupied,
-                     startdate, enddate, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (unique_id) DO NOTHING
-                """,
-                [
-                    (
-                        row["unique_id"],
-                        row["simulation_run_id"],
-                        row["slot_id"],
-                        row["occupied"],
-                        row["startdate"],
-                        row["enddate"],
-                        row["status"],
-                    )
-                    for row in rows
-                ],
-            )
+            _insert_history_rows(cursor, rows)
         conn.commit()
     except Exception:
         conn.rollback()

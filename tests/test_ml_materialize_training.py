@@ -75,7 +75,7 @@ def test_materialize_training_rows_batches_and_commits():
             return False
 
         def executemany(self, sql, params):
-            self.calls.append((" ".join(sql.split()), list(params)))
+            raise AssertionError("training rows must use multi-row insert")
 
         def execute(self, sql, params=None):
             self.calls.append((" ".join(sql.split()), params))
@@ -103,7 +103,12 @@ def test_materialize_training_rows_batches_and_commits():
     rows = build_training_rows(snapshots, samples)
     conn = Connection()
 
-    count = materialize_training_rows(conn, RUN_ID, rows, batch_size=4)
+    count = materialize_training_rows(
+        conn,
+        RUN_ID,
+        (row for row in rows),
+        batch_size=4,
+    )
 
     assert count == len(rows)
     assert len(conn.cursor_value.calls) >= 2

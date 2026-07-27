@@ -108,6 +108,7 @@ def train_model(
     model_version,
     training_run_id,
     seed=20260727,
+    max_iter=300,
     overwrite=False,
 ):
     artifact_dir = Path(artifact_dir)
@@ -129,7 +130,7 @@ def train_model(
     model = HistGradientBoostingRegressor(
         loss="absolute_error",
         learning_rate=0.05,
-        max_iter=300,
+        max_iter=max_iter,
         max_leaf_nodes=31,
         min_samples_leaf=20,
         l2_regularization=0.1,
@@ -208,16 +209,19 @@ def train_model(
     return TrainingResult(metrics, metadata)
 
 
-def load_training_rows(conn, run_id):
+def load_training_rows(conn, run_id, sample_stride=1):
+    if sample_stride < 1:
+        raise ValueError("sample_stride must be at least 1")
     with conn.cursor() as cursor:
         cursor.execute(
             """
             SELECT features, seconds_to_full, dataset_split
             FROM parking_model_training_data
             WHERE simulation_run_id = %s
+              AND MOD(sample_id, %s) = 0
             ORDER BY observed_at
             """,
-            (run_id,),
+            (str(run_id), sample_stride),
         )
         rows = []
         for features, seconds_to_full, dataset_split in cursor.fetchall():
@@ -244,14 +248,21 @@ def register_model(conn, result):
                 metrics, parameters
             )
             VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
-            ON CONFLICT (model_version) DO NOTHING
+            ON CONFLICT (model_version) DO UPDATE SET
+                algorithm = EXCLUDED.algorithm,
+                artifact_sha256 = EXCLUDED.artifact_sha256,
+                feature_schema_hash = EXCLUDED.feature_schema_hash,
+                training_run_id = EXCLUDED.training_run_id,
+                metrics = EXCLUDED.metrics,
+                parameters = EXCLUDED.parameters,
+                trained_at = CURRENT_TIMESTAMP
             """,
             (
                 metadata["model_version"],
                 metadata["algorithm"],
                 metadata["artifact_sha256"],
                 metadata["feature_schema_hash"],
-                UUID(metadata["training_run_id"]),
+                metadata["training_run_id"],
                 json.dumps(metadata["metrics"]),
                 json.dumps(metadata["parameters"]),
             ),
@@ -270,19 +281,31 @@ def main():
         default="models/parking_fill_eta",
     )
     parser.add_argument("--seed", type=int, default=20260727)
+    parser.add_argument("--sample-stride", type=int, default=1)
+    parser.add_argument("--max-iter", type=int, default=300)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     run_id = UUID(args.simulation_run_id)
     conn = connect_database()
     try:
-        rows = load_training_rows(conn, run_id)
+        rows = load_training_rows(
+            conn,
+            run_id,
+            sample_stride=args.sample_stride,
+        )
+        print(
+            f"loaded_training_rows={len(rows)} "
+            f"sample_stride={args.sample_stride}",
+            flush=True,
+        )
         result = train_model(
             rows,
             args.output,
             args.model_version,
             run_id,
             seed=args.seed,
+            max_iter=args.max_iter,
             overwrite=args.overwrite,
         )
         register_model(conn, result)

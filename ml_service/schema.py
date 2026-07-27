@@ -120,6 +120,10 @@ def schema_statements():
 
 def ensure_ml_schema(conn, commit=True):
     with conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            ("parking_ml_schema_v1",),
+        )
         for statement in schema_statements():
             cursor.execute(statement)
         for row_name, width in ROW_WIDTHS.items():

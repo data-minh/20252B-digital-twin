@@ -1,4 +1,4 @@
-from ml_service.schema import schema_statements
+from ml_service.schema import ensure_ml_schema, schema_statements
 from ml_service.slots import CAPACITY, SLOT_IDS, empty_slot_state, normalize_slot_state
 
 
@@ -55,3 +55,38 @@ def test_schema_defines_required_tables_and_prediction_constraint():
     assert "predicted_seconds_to_full BETWEEN 0 AND 10800" in sql
     assert "UNIQUE (source_event_id, model_version)" in sql
     assert "seconds_to_full BETWEEN 0 AND 10800" in sql
+
+
+def test_schema_takes_advisory_lock_before_running_ddl():
+    class Cursor:
+        def __init__(self):
+            self.sql = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            self.sql.append(" ".join(sql.split()))
+
+    class Connection:
+        def __init__(self):
+            self.cursor_value = Cursor()
+
+        def cursor(self):
+            return self.cursor_value
+
+        def commit(self):
+            pass
+
+    conn = Connection()
+    ensure_ml_schema(conn)
+
+    assert conn.cursor_value.sql[0].startswith(
+        "SELECT pg_advisory_xact_lock"
+    )
+    assert conn.cursor_value.sql[1].startswith(
+        "CREATE TABLE IF NOT EXISTS parking_slots"
+    )

@@ -94,14 +94,33 @@ def test_persist_simulation_writes_run_transitions_and_commits_once():
     sql = "\n".join(call[1] for call in conn.calls)
     assert "INSERT INTO parking_simulation_runs" in sql
     assert "INSERT INTO parking_simulated_slot_history" in sql
+    run_insert = next(
+        call
+        for call in conn.calls
+        if "INSERT INTO parking_simulation_runs" in call[1]
+    )
+    assert run_insert[2][0] == str(RUN_ID)
+    history_insert = next(
+        call
+        for call in conn.calls
+        if "INSERT INTO parking_simulated_slot_history" in call[1]
+    )
+    assert history_insert[0] == "execute"
+    assert all(
+        isinstance(history_insert[2][index], str)
+        for index in range(1, len(history_insert[2]), 7)
+    )
+    assert not any(call[0] == "executemany" for call in conn.calls)
     assert conn.commit_count == 1
     assert conn.rollback_count == 0
 
 
 def test_persist_simulation_rolls_back_on_database_error():
     class BrokenCursor(FakeCursor):
-        def executemany(self, sql, params):
-            raise RuntimeError("database write failed")
+        def execute(self, sql, params=None):
+            if "INSERT INTO parking_simulated_slot_history" in sql:
+                raise RuntimeError("database write failed")
+            super().execute(sql, params)
 
     conn = FakeConnection()
     conn.cursor = lambda: BrokenCursor(conn)
