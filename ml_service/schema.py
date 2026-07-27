@@ -118,7 +118,7 @@ def schema_statements():
     ]
 
 
-def ensure_ml_schema(conn):
+def ensure_ml_schema(conn, commit=True):
     with conn.cursor() as cursor:
         for statement in schema_statements():
             cursor.execute(statement)
@@ -132,4 +132,5 @@ def ensure_ml_schema(conn):
                     """,
                     (f"{row_name}{column:02d}", row_name, column),
                 )
-    conn.commit()
+    if commit:
+        conn.commit()
