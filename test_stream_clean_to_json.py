@@ -274,7 +274,11 @@ def test_camera_restarts_dataset_from_first_frame_when_looping(tmp_path, monkeyp
     assert [message["frame_id"] for message in published] == [1, 2, 1]
     assert [message["source_frame_id"] for message in published] == ["0001", "0002", "0001"]
     assert [message["image"] for message in published] == [str(image_1), str(image_2), str(image_1)]
-    assert [message["payload"][0]["timestamp"] for message in published] == [1634567890, 1634567891, 1634567890]
+    assert [message["payload"][0]["timestamp"] for message in published] == [
+        1634567890,
+        1634567891,
+        1634567892,
+    ]
 
 
 def test_camera_configures_mqtt_username_and_password():

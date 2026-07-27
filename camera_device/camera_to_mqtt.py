@@ -100,6 +100,14 @@ def publish_dataset(
                     start_timestamp=start_timestamp,
                     frame_interval_seconds=frame_interval_seconds,
                 )
+                event_timestamp = (
+                    start_timestamp
+                    + published * frame_interval_seconds
+                )
+                payload = [
+                    {**record, "timestamp": event_timestamp}
+                    for record in payload
+                ]
                 event_id = source_event_id(camera_session_id, cycle, frame_id)
                 message = frame_message(
                     split,
